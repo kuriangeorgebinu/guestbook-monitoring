@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guestbook on Kubernetes, with Prometheus and Grafana monitoring (Pulumi, TypeScript)</title>
+<style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #ffffff; color: #1f2328; font: 16px/1.6 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+main { max-width: 920px; margin: 0 auto; padding: 32px 20px 80px; }
+h1, h2, h3 { line-height: 1.25; margin: 1.6em 0 .6em; }
+h1 { font-size: 2em; margin-top: 0; padding-bottom: .3em; border-bottom: 1px solid #d1d9e0; }
+h2 { font-size: 1.5em; padding-bottom: .3em; border-bottom: 1px solid #d1d9e0; }
+a { color: #0969da; text-decoration: none; } a:hover { text-decoration: underline; }
+code { font: 85% ui-monospace, "Cascadia Code", Consolas, monospace; background: #eff1f3; padding: .2em .4em; border-radius: 6px; }
+pre { background: #f6f8fa; border: 1px solid #d1d9e0; border-radius: 6px; padding: 14px 16px; overflow-x: auto; line-height: 1.45; }
+pre code { background: none; padding: 0; font-size: 85%; }
+table { border-collapse: collapse; display: block; overflow-x: auto; margin: 1em 0; }
+th, td { border: 1px solid #d1d9e0; padding: 6px 13px; text-align: left; vertical-align: top; }
+th { background: #f6f8fa; font-weight: 600; }
+tr:nth-child(2n) td { background: #fbfcfd; }
+img { max-width: 100%; border: 1px solid #d1d9e0; border-radius: 6px; }
+blockquote { margin: 0; padding: 0 1em; color: #59636e; border-left: .25em solid #d1d9e0; }
+footer { margin-top: 48px; color: #59636e; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Guestbook on Kubernetes, with Prometheus and Grafana monitoring (Pulumi, TypeScript)</h1>
+<p>The Kubernetes Guestbook (a Redis leader, a Redis replica and three PHP frontends), extended with a
+monitoring stack. <strong>Everything is deployed by one Pulumi program:</strong> one <code>pulumi up</code> builds the app,
+Prometheus, Grafana and a Guestbook dashboard, and outputs Grafana&#39;s URL and admin credentials.</p>
+<p>Derived from the <code>kubernetes-ts-guestbook</code> (simple variant) example in
+<a href="https://github.com/pulumi/examples">pulumi/examples</a>, licensed under Apache-2.0 (see <code>LICENSE</code> and
+<code>NOTICE</code>). The Guestbook application originates from the
+<a href="https://kubernetes.io/docs/tutorials/stateless-application/guestbook/">Kubernetes tutorial</a>.</p>
+<p><img src="docs/grafana-guestbook-dashboard.png" alt="Guestbook dashboard in Grafana"></p>
+<h2>What gets deployed</h2>
+<table>
+<thead>
+<tr>
+<th>Namespace</th>
+<th>Component</th>
+<th>Details</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>default</code></td>
+<td><code>frontend</code> x3</td>
+<td><code>pulumi/guestbook-php-redis</code> (Apache/PHP), Service on port 80 (LoadBalancer by default)</td>
+</tr>
+<tr>
+<td><code>default</code></td>
+<td><code>redis-leader</code></td>
+<td><code>redis:7</code> + <strong>redis_exporter v1.96.0 sidecar</strong> on port 9121, named <code>metrics</code></td>
+</tr>
+<tr>
+<td><code>default</code></td>
+<td><code>redis-replica</code></td>
+<td><code>pulumi/guestbook-redis-replica</code> + <strong>redis_exporter sidecar</strong> on port 9121, named <code>metrics</code></td>
+</tr>
+<tr>
+<td><code>monitoring</code></td>
+<td>kube-prometheus-stack <strong>92.16.1</strong> (Helm)</td>
+<td>Prometheus (+ operator) and Grafana (NodePort <strong>32000</strong>)</td>
+</tr>
+<tr>
+<td><code>monitoring</code></td>
+<td>prometheus-blackbox-exporter <strong>11.20.2</strong> (Helm)</td>
+<td>probes the frontend over HTTP (port 9115)</td>
+</tr>
+<tr>
+<td><code>monitoring</code></td>
+<td>2 ServiceMonitors, 1 Probe</td>
+<td>scrape config for the Redis exporters and the frontend probe</td>
+</tr>
+<tr>
+<td><code>monitoring</code></td>
+<td>ConfigMap <code>guestbook-dashboard</code></td>
+<td>the Grafana dashboard, picked up by Grafana&#39;s dashboard sidecar</td>
+</tr>
+</tbody></table>
+<p>Files: <code>index.ts</code> (the app and outputs), <code>monitoring.ts</code> (the monitoring stack), <code>dashboard.ts</code> (the
+dashboard), <code>Pulumi.yaml</code> (config schema). This README is also available as <code>README.html</code> (same
+content, for reading in a browser).</p>
+<h2>Prerequisites</h2>
+<p>Tested on Windows 11 with PowerShell, Docker Desktop (WSL 2) and its built-in Kubernetes v1.36.</p>
+<ul>
+<li><p>Node.js 24, Git, kubectl, and the <a href="https://www.pulumi.com/docs/get-started/install/">Pulumi CLI</a>
+(<code>winget install --id Pulumi.Pulumi -e</code>). The Helm CLI is <strong>not</strong> needed: Pulumi renders the charts.</p>
+</li>
+<li><p>Docker Desktop &rarr; Settings &rarr; Kubernetes &rarr; <strong>Enable Kubernetes</strong>, cluster type <strong>kubeadm</strong>
+(in the <em>kind</em> mode NodePorts do not reach <code>localhost</code>).</p>
+</li>
+<li><p>Enough memory for the VM. On an 8 GB PC, set it in <code>%USERPROFILE%\.wslconfig</code>, then quit Docker
+Desktop, run <code>wsl --shutdown</code> and start it again:</p>
+<pre><code class="language-ini">[wsl2]
+memory=4GB
+swap=4GB
+
+[experimental]
+autoMemoryReclaim=gradual
+</code></pre>
+</li>
+</ul>
+<h2>Deploy</h2>
+<p>Start Docker Desktop first and wait until its status bar shows <strong>Kubernetes running</strong> (green); then
+<code>kubectl get nodes</code> should list <code>docker-desktop   Ready</code>.</p>
+<p>The repository deliberately ships <strong>no <code>Pulumi.dev.yaml</code></strong>: that file holds a stack&#39;s config and an
+encryption salt tied to its creator&#39;s passphrase, so a copied one makes <code>pulumi stack init</code> fail with
+<code>incorrect passphrase</code>. The <code>pulumi config set</code> lines below create your own.</p>
+<pre><code class="language-powershell">kubectl config use-context docker-desktop
+npm install
+
+# Pulumi state stays on this machine (no Pulumi Cloud account needed).
+# Secrets in the stack are encrypted with this passphrase: set it in every new PowerShell window.
+$env:PULUMI_CONFIG_PASSPHRASE = &quot;choose-a-passphrase&quot;
+pulumi login --local
+pulumi stack init dev
+
+pulumi config set serviceType LoadBalancer      # frontend: LoadBalancer (default) or NodePort
+pulumi config set grafanaServiceType NodePort   # Grafana: NodePort (default) or LoadBalancer
+pulumi config set grafanaNodePort 32000
+
+npx tsc --noEmit        # compile check
+pulumi up --yes         # about 3 minutes on a laptop once images are cached
+pulumi up --refresh --yes   # reads the LoadBalancer address into frontendUrl
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Config key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>serviceType</code></td>
+<td><code>LoadBalancer</code></td>
+<td>Frontend Service type (<code>LoadBalancer</code> or <code>NodePort</code>)</td>
+</tr>
+<tr>
+<td><code>frontendNodePort</code></td>
+<td><code>30080</code></td>
+<td>Frontend NodePort when <code>serviceType</code> is <code>NodePort</code></td>
+</tr>
+<tr>
+<td><code>grafanaServiceType</code></td>
+<td><code>NodePort</code></td>
+<td>Grafana Service type (<code>NodePort</code> or <code>LoadBalancer</code>)</td>
+</tr>
+<tr>
+<td><code>grafanaNodePort</code></td>
+<td><code>32000</code></td>
+<td>Grafana NodePort</td>
+</tr>
+<tr>
+<td><code>grafanaHost</code></td>
+<td><code>localhost</code></td>
+<td>Host used to build the <code>grafanaUrl</code> output</td>
+</tr>
+</tbody></table>
+<p>The Guestbook is then at <code>pulumi stack output frontendUrl</code> (<code>http://localhost</code>).</p>
+<h2>Grafana access</h2>
+<p>The <strong>source of truth is the stack output</strong>: every fresh deployment generates a new admin password.</p>
+<pre><code class="language-powershell">pulumi stack output grafanaUrl                           # http://localhost:32000
+pulumi stack output grafanaAdminUser                     # admin
+pulumi stack output grafanaAdminPassword --show-secrets  # generated password
+</code></pre>
+<p>Log in at <code>http://localhost:32000</code> as <code>admin</code> with that password. No password is written in this
+repository: each deployment generates its own, and only the stack output knows it. The dashboard is
+at <code>http://localhost:32000/d/guestbook</code> (Dashboards &rarr; <strong>Guestbook</strong>, in the General folder).</p>
+<p>Verified path: <strong>NodePort 32000</strong> on Docker Desktop (kubeadm). Grafana is a NodePort by default
+because the frontend&#39;s LoadBalancer already owns <code>localhost:80</code>, and a fixed NodePort gives a
+deterministic URL. If it does not open: <code>kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:3000</code>
+and browse <code>http://localhost:3000</code>.</p>
+<p>The password is created by Pulumi (<code>random.RandomPassword</code>), stored in a Kubernetes Secret and given
+to Grafana through <code>grafana.admin.existingSecret</code>, so it never appears in the Helm release values.</p>
+<h2>Verify that Prometheus scrapes the Guestbook</h2>
+<p><strong>How each tier is monitored:</strong> the <strong>backend is scraped</strong>: a redis_exporter sidecar in each Redis
+pod publishes <code>/metrics</code>, and two ServiceMonitors point Prometheus at it. The <strong>frontend is probed,
+not scraped</strong>: its Apache/PHP image exposes no metrics endpoint, so blackbox-exporter requests the
+page every 30 s and records availability and latency. CPU and memory for every Guestbook pod come
+from the kubelet&#39;s cAdvisor endpoint.</p>
+<pre><code class="language-powershell">kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+</code></pre>
+<p>Open <code>http://localhost:9090/targets</code>. Expected (the acceptance test):</p>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>State</th>
+<th>Proves</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>serviceMonitor/monitoring/redis-leader/0</code></td>
+<td>UP</td>
+<td>backend scraped</td>
+</tr>
+<tr>
+<td><code>serviceMonitor/monitoring/redis-replica/0</code></td>
+<td>UP</td>
+<td>backend scraped</td>
+</tr>
+<tr>
+<td><code>probe/monitoring/frontend</code></td>
+<td>UP</td>
+<td>frontend probed</td>
+</tr>
+<tr>
+<td><code>serviceMonitor/monitoring/kube-prometheus-stack-kubelet/1</code> (<code>/metrics/cadvisor</code>)</td>
+<td>UP</td>
+<td>pod CPU/memory</td>
+</tr>
+</tbody></table>
+<p><img src="docs/prometheus-targets.png" alt="Prometheus targets, all UP"></p>
+<p>Query checks (PowerShell, with the port-forward running):</p>
+<pre><code class="language-powershell">function Get-PromQL($q) {
+  (Invoke-RestMethod -Method Post -Uri http://localhost:9090/api/v1/query -Body @{ query = $q }).data.result |
+    ForEach-Object { &quot;{0} = {1}&quot; -f ($_.metric | ConvertTo-Json -Compress), $_.value[1] }
+}
+Get-PromQL &#39;up{job=~&quot;redis-.*&quot;}&#39;                     # 2 series, both 1
+Get-PromQL &#39;redis_up&#39;                                # 2 series, both 1
+Get-PromQL &#39;probe_success{job=&quot;frontend&quot;}&#39;           # 1
+Get-PromQL &#39;probe_http_status_code{job=&quot;frontend&quot;}&#39;  # 200
+</code></pre>
+<p>End-to-end proof (traffic in, metrics out):</p>
+<pre><code class="language-powershell">$frontendUrl = pulumi stack output frontendUrl
+1..50 | ForEach-Object { Invoke-WebRequest $frontendUrl -UseBasicParsing | Out-Null }
+Get-PromQL &#39;sum(rate(redis_commands_processed_total[2m]))&#39;   # &gt; 0, rises with the traffic
+</code></pre>
+<p>In the reference run, 50 requests moved <code>redis_commands_processed_total</code> from 202 to 238.</p>
+<h2>The dashboard</h2>
+<p>Grafana &rarr; Dashboards &rarr; <strong>Guestbook</strong> (provisioned from <code>dashboard.ts</code>, in the General folder).</p>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Query</th>
+<th>Healthy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Frontend probe (1 = UP)</td>
+<td><code>probe_success{job=&quot;frontend&quot;}</code></td>
+<td>green <code>1</code> (a down frontend shows red <code>0</code>; <em>No data</em> means the probe target is missing)</td>
+</tr>
+<tr>
+<td>Frontend probe latency</td>
+<td><code>probe_duration_seconds{job=&quot;frontend&quot;}</code></td>
+<td>tens of ms</td>
+</tr>
+<tr>
+<td>Redis commands/sec</td>
+<td><code>sum by (job) (rate(redis_commands_processed_total[5m]))</code></td>
+<td>rises with traffic</td>
+</tr>
+<tr>
+<td>Redis connected clients</td>
+<td><code>sum by (job) (redis_connected_clients)</code></td>
+<td>1 per instance between requests (PHP connects per request)</td>
+</tr>
+<tr>
+<td>CPU by workload</td>
+<td>pod-level <code>container_cpu_usage_seconds_total</code>, grouped by workload</td>
+<td>small, steady</td>
+</tr>
+<tr>
+<td>Memory by workload</td>
+<td>pod-level <code>container_memory_working_set_bytes</code>, grouped by workload</td>
+<td>about 20-40 MiB each</td>
+</tr>
+</tbody></table>
+<h2>Design decisions</h2>
+<ul>
+<li><strong>Frontend probed, not scraped.</strong> The image has no <code>/metrics</code> and no <code>mod_status</code>; adding them
+means rebuilding the image. A blackbox Probe gives honest availability and latency without that.</li>
+<li><strong>redis_exporter as sidecars</strong> rather than a separate Deployment: it reads Redis over <code>localhost</code>
+in the same pod. It has a <strong>liveness</strong> probe, deliberately not a readiness probe: a failing
+readiness probe would mark the Redis pod NotReady and pull Redis out of its Service, letting a
+monitoring sidecar break the app.</li>
+<li><strong>Explicit labels, namespaces and named ports.</strong> In the stock example the Services&#39; labels resolve
+to <code>undefined</code> and nothing sets a namespace, so a ServiceMonitor would silently match nothing.
+Every app resource now has <code>namespace: default</code>, an <code>app</code> label and named ports (<code>metrics</code>, <code>redis</code>,
+<code>http</code>); the ServiceMonitors select them across namespaces with <code>namespaceSelector</code>.</li>
+<li><strong>Selector flags.</strong> <code>serviceMonitorSelectorNilUsesHelmValues</code> and <code>probeSelectorNilUsesHelmValues</code>
+are <code>false</code>, so Prometheus discovers our ServiceMonitors and Probe without the chart&#39;s <code>release</code>
+label. Left at the default, a miss is silent.</li>
+<li><strong>Sized for an 8 GB laptop.</strong> Alertmanager, <strong>node-exporter and kube-state-metrics are disabled</strong>:
+none is required here, pod CPU/memory comes from the kubelet&#39;s cAdvisor endpoint, and
+node-exporter crash-loops on Docker Desktop (&quot;path / is mounted on / but it is not a shared or
+slave mount&quot;). The chart&#39;s default <code>node_*</code>/<code>kube_*</code> recording rules therefore evaluate empty,
+which is harmless because no alerts are configured. Control-plane scrapers that Docker Desktop
+does not expose are off. Limits: Prometheus 768Mi, Grafana 512Mi; no persistent volumes.</li>
+<li><strong>Pod-level resource queries.</strong> Docker Desktop&#39;s container runtime exposes only pod-level cAdvisor
+series (no <code>container</code> label), so the CPU/memory panels use pod-level series (<code>container=&quot;&quot;</code>),
+which exist on every runtime, grouped into a <code>workload</code> label derived from the pod name. Per-pod
+figures include the exporter sidecar.</li>
+<li><strong><code>isMinikube</code> replaced</strong> by <code>serviceType</code> (frontend) and <code>grafanaServiceType</code> (Grafana).</li>
+<li><strong>Pinned versions:</strong> both charts, redis_exporter, <code>redis:7</code> and the npm packages. The two
+<code>pulumi/guestbook-*</code> images publish no version tags, so they cannot be pinned.</li>
+</ul>
+<h2>Starting it again (after a reboot or quitting Docker)</h2>
+<p>The deployment lives inside Docker Desktop&#39;s Kubernetes, so it comes back on its own when Docker
+starts. Nothing needs redeploying.</p>
+<pre><code class="language-powershell"># 1. Start Docker Desktop, wait for &quot;Kubernetes running&quot;, then:
+kubectl get nodes                         # docker-desktop   Ready
+kubectl get pods -n default               # 3 frontend 1/1, redis-leader 2/2, redis-replica 2/2
+kubectl get pods -n monitoring            # all Running (Grafana 3/3, Prometheus 2/2)
+
+# 2. Only if the pods are missing (e.g. Kubernetes was reset), in this folder:
+$env:PULUMI_CONFIG_PASSPHRASE = &quot;your-passphrase&quot;
+pulumi up --yes
+</code></pre>
+<p>Then browse <code>http://localhost</code> (Guestbook) and <code>http://localhost:32000</code> (Grafana). Pods can take a
+minute or two to turn Running after Kubernetes reports Ready.</p>
+<h2>Troubleshooting</h2>
+<p>These were all hit while testing this README from scratch (fresh copy of the repository, empty
+cluster, new passphrase) on Nov 3, 2026.</p>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>pulumi stack init dev</code> fails: <code>could not create secrets manager for new stack: incorrect passphrase</code></td>
+<td>A <code>Pulumi.dev.yaml</code> from another person&#39;s stack is in the folder; its encryption salt belongs to their passphrase</td>
+<td>Delete <code>Pulumi.dev.yaml</code> (it is not shipped in this repository) and run <code>pulumi stack init dev</code> again</td>
+</tr>
+<tr>
+<td><code>pulumi stack init dev</code> fails: stack already exists</td>
+<td>You already have a local stack called <code>dev</code> in <code>~/.pulumi</code></td>
+<td>Use another name (<code>pulumi stack init guestbook-test</code>) or <code>pulumi stack select dev</code></td>
+</tr>
+<tr>
+<td>Docker Desktop closes itself a few seconds after starting (backend log ends with <code>shutting down vital services</code>)</td>
+<td>Stale socket files left in <code>%LOCALAPPDATA%\Docker\run</code> and <code>%LOCALAPPDATA%\docker-secrets-engine</code> (seen on a PC with McAfee; <code>docker desktop stop</code> does not remove them)</td>
+<td>Quit Docker, then rename both folders aside and start Docker again (commands below). An antivirus exclusion for those folders is the permanent fix</td>
+</tr>
+<tr>
+<td><code>kubectl exec</code> fails: <code>server gave HTTP response to HTTPS client</code></td>
+<td>Docker Desktop&#39;s cri-dockerd runtime</td>
+<td>Not needed by this README; use the port-forward or the Grafana UI instead</td>
+</tr>
+<tr>
+<td>Grafana panels show <em>No data</em> right after deploying</td>
+<td>Prometheus has not scraped yet</td>
+<td>Wait a minute and set the time range to <em>Last 15 minutes</em></td>
+</tr>
+</tbody></table>
+<pre><code class="language-powershell"># Docker Desktop startup fix (stale sockets): quit Docker Desktop first.
+$ts = Get-Date -f yyyyMMddHHmm
+Rename-Item &quot;$env:LOCALAPPDATA\Docker\run&quot; &quot;run.old-$ts&quot; -ErrorAction SilentlyContinue
+Rename-Item &quot;$env:LOCALAPPDATA\docker-secrets-engine&quot; &quot;docker-secrets-engine.old-$ts&quot; -ErrorAction SilentlyContinue
+Start-Process &quot;C:\Program Files\Docker\Docker\Docker Desktop.exe&quot;
+</code></pre>
+<h2>Teardown</h2>
+<pre><code class="language-powershell">pulumi destroy --yes
+pulumi stack rm dev
+</code></pre>
+<p>Helm never deletes a chart&#39;s CRDs. To remove the leftover Prometheus operator CRDs:</p>
+<pre><code class="language-powershell">kubectl get crd -o name | Select-String &#39;monitoring.coreos.com&#39; | ForEach-Object { kubectl delete $_.ToString().Trim() }
+</code></pre>
+<h2>Other clusters</h2>
+<ul>
+<li><strong>kind</strong> (not Docker Desktop): NodePorts and LoadBalancers do not reach <code>localhost</code>, so use
+<code>kubectl port-forward svc/frontend 8080:80</code> and
+<code>kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:3000</code>.</li>
+<li><strong>Cloud clusters:</strong> <code>pulumi config set grafanaServiceType LoadBalancer</code>; run <code>pulumi up --refresh</code>
+once more after the first deploy so <code>grafanaUrl</code> picks up the load balancer address.</li>
+</ul>
+<h2>Limitations and next steps</h2>
+<p>No alerting rules are defined; Prometheus is a single replica; metrics are lost when its pod
+restarts (no persistent volume); Prometheus itself has no authentication. Natural next steps:
+SLO-based alerts on probe success and Redis availability, persistent storage, and an Apache
+exporter if the frontend image can be rebuilt.</p>
+
+<footer>Generated from README.md. If the two ever differ, README.md is the source.</footer>
+</main>
+</body>
+</html>

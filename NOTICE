@@ -1,0 +1,5 @@
+﻿This repository contains code derived from the Pulumi examples repository
+(https://github.com/pulumi/examples), licensed under the Apache License, Version 2.0.
+The Guestbook application originates from
+https://kubernetes.io/docs/tutorials/stateless-application/guestbook/
+Modifications: configurable service type, Redis metrics exporters, Prometheus/Grafana monitoring.

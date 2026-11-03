@@ -1,0 +1,20 @@
+name: guestbook
+runtime: nodejs
+description: Kubernetes Guestbook (pulumi/examples, Apache-2.0) with Prometheus and Grafana monitoring
+template:
+  config:
+    serviceType:
+      description: Service type for the Guestbook frontend (LoadBalancer or NodePort)
+      default: LoadBalancer
+    frontendNodePort:
+      description: NodePort for the frontend when serviceType is NodePort
+      default: 30080
+    grafanaServiceType:
+      description: Service type for Grafana (NodePort or LoadBalancer)
+      default: NodePort
+    grafanaNodePort:
+      description: NodePort for Grafana when grafanaServiceType is NodePort
+      default: 32000
+    grafanaHost:
+      description: Host name used to build the Grafana URL output
+      default: localhost

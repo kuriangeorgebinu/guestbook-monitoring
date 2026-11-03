@@ -1,0 +1,6 @@
+node_modules/
+bin/
+*.tsbuildinfo
+
+# Per-stack config holds an encryption salt tied to its creator's passphrase; each user creates their own.
+Pulumi.*.yaml
